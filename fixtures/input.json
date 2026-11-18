@@ -1,0 +1,12 @@
+{
+  "schedule": "weekly-maintenance",
+  "timezone": "America/New_York",
+  "local_start": "2024-03-03T02:30",
+  "interval_weeks": 1,
+  "weekdays": [7],
+  "until": "2024-11-10",
+  "duration_minutes": 90,
+  "exceptions": [],
+  "gap_policy": "skip",
+  "fold_policy": "earlier"
+}
