@@ -1,0 +1,79 @@
+{
+  "resources": [
+    {"resource": "digestive", "capacity": 2},
+    {"resource": "surgery", "capacity": 1}
+  ],
+  "requests": [
+    {
+      "rule": {
+        "schedule": "triage",
+        "timezone": "America/New_York",
+        "local_start": "2024-03-04T09:00",
+        "interval_weeks": 1,
+        "weekdays": [1],
+        "until": "2024-11-04",
+        "duration_minutes": 60,
+        "exceptions": [],
+        "gap_policy": "skip",
+        "fold_policy": "earlier"
+      },
+      "priority": 5,
+      "mandatory": true,
+      "demands": [{"resource": "digestive", "units": 1}]
+    },
+    {
+      "rule": {
+        "schedule": "swallow",
+        "timezone": "America/New_York",
+        "local_start": "2024-03-04T09:00",
+        "interval_weeks": 4,
+        "weekdays": [1],
+        "until": "2024-11-04",
+        "duration_minutes": 90,
+        "exceptions": [],
+        "gap_policy": "skip",
+        "fold_policy": "earlier"
+      },
+      "priority": 7,
+      "mandatory": false,
+      "demands": [{"resource": "digestive", "units": 1}]
+    },
+    {
+      "rule": {
+        "schedule": "motility",
+        "timezone": "America/New_York",
+        "local_start": "2024-03-04T09:00",
+        "interval_weeks": 4,
+        "weekdays": [1],
+        "until": "2024-11-04",
+        "duration_minutes": 120,
+        "exceptions": [],
+        "gap_policy": "skip",
+        "fold_policy": "earlier"
+      },
+      "priority": 7,
+      "mandatory": false,
+      "demands": [{"resource": "digestive", "units": 1}]
+    },
+    {
+      "rule": {
+        "schedule": "scopy",
+        "timezone": "America/New_York",
+        "local_start": "2024-03-04T09:30",
+        "interval_weeks": 4,
+        "weekdays": [1],
+        "until": "2024-11-04",
+        "duration_minutes": 60,
+        "exceptions": [],
+        "gap_policy": "skip",
+        "fold_policy": "earlier"
+      },
+      "priority": 9,
+      "mandatory": false,
+      "demands": [
+        {"resource": "digestive", "units": 1},
+        {"resource": "surgery", "units": 1}
+      ]
+    }
+  ]
+}
