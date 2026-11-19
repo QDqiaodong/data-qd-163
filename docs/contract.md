@@ -188,3 +188,165 @@ uv pip install --python .venv/bin/python --no-build-isolation --no-deps .
 .venv/bin/calendar-admit --source fixtures/admission.json --output run/admission.json
 .venv/bin/python -m unittest discover -s tests -v
 ```
+
+## 计划执行核销 v1 (`calendar-reconcile`)
+
+`calendar-reconcile` 是第三个、增量式入口。`calendar-expand`、`calendar-admit`
+的接口与报告结构保持不变。它把计划日历实例与实际执行记录做核销，但**不挑一个
+任意配对当作确定事实**：先求两级最优解释（先最大化配对数，再最小化绝对分钟偏差
+之和），再报告在任意全局同等最优解释中仍可成立的全部三元组归属与未配对可能性。
+
+### 输入
+
+JSON 根恰含 `rules`、`observations`、`tolerance_minutes`。
+
+* `rules` 是完整单规则对象数组（字段与校验沿用 `model.analyze`，不读取准入
+  报告），至多 32 条；`schedule` 在本输入内唯一。允许展开为空的规则。
+* `observations` 至多 32 条，每项恰含 `observation_id`、`timezone`、
+  `local_start`、`eligible_schedules`。记录 ID 唯一；可归属的日历 ID 非空、无
+  重复且必须引用已知规则。
+* `tolerance_minutes` 是 0..10080 的整数；布尔值在整数位置被拒绝。
+* 所有标识符遵循 `common.ident`；字段集合必须精确；所有输入先验证，不会因为
+  没有可配对对象而跳过末尾的非法记录。
+* `local_start` 是无偏移的分钟级墙上时间字符串，能被
+  `datetime.fromisoformat` 解析，但不得带 tzinfo、秒或微秒（显式 `:00` 秒字段
+  同样拒绝）。未知时区和非法时间格式都是输入错误。
+* 按现有 gap/fold 策略展开的计划实例总数（归一前）至多 32。
+
+### 实际记录的 UTC 证据候选
+
+实际记录的 `local_start` 是无偏移墙上时间，实现把 `fold=0` 与 `fold=1` 分别做
+IANA 时区的 UTC 往返验证（`local -> UTC -> local` 必须还原），以全部**不同的
+有效 UTC 时刻**作为证据候选：
+
+* 正常时刻一个候选；
+* 秋季回拨时刻两个候选；
+* 春季缺口时刻零个候选。
+
+实际缺口不平移、不使整份输入失败，而作为无有效时刻的记录保留并出现在报告中。
+计划规则的 `fold_policy` 绝不用于替实际证据预先选择时刻；两个 fold 候选一直
+保留到全局核销与支持判定，因为其他记录竞争同一实例可能排除其中一个 fold。
+
+### 分钟精度限定（仅本入口）
+
+计划展开后每个实例的 `start_utc`、`end_utc`，以及每条实际记录经往返验证得到的
+全部有效候选，秒和微秒都必须为 0。全部输入的此项精度验证在实例身份归一及任何
+空集捷径**之前**完成；任一不满足即整份输入错误并保留旧报告，即使没有任何可配对
+对象也拒绝，不截断、四舍五入或静默删除候选。例如 `Europe/Paris` 的
+`1900-01-01T09:00` 对应 UTC `08:50:39`，在计划侧和实际侧都被拒绝；实际 gap 的
+零候选仍是合法数据。旧入口行为不受此限定影响。
+
+计划实例按 `(schedule, start_utc)` 归为同一个待核销义务，重复身份只输出和核销
+一次，32 个总实例上限按归一后的数量检查（归一前的原始数量同样先检查）；不同
+schedule 即使同一 UTC 仍是不同义务。
+
+### 合法性与两级目标
+
+一次核销解释由若干三元组 `(observation_id, 计划实例, 该记录的候选 UTC)` 构成。
+三元组合法当且仅当：日历 ID 被该记录的 `eligible_schedules` 允许，且开始时刻
+偏差绝对值不超过容差。每个实际记录和每个计划实例各至多使用一次；计划实例以
+`(schedule, start_utc)` 二元组标识。时长不参与配对。
+
+优化目标分两级，顺序固定：
+
+1. 最大化配对数；
+2. 在配对数相同的解释中，最小化所有配对的绝对分钟偏差之和。
+
+`delta_minutes` 是 observed UTC 减计划 `start_utc` 的有符号整数分钟数，最小化
+目标取其绝对值。匹配数优先于偏差：可能必须牺牲局部最近配对才能达到最大配对数；
+相同最大配对数下总偏差更大的边不属于任何最优解释，因而不受支持。
+
+### 支持语义
+
+* 一个三元组"受支持"当且仅当它确实出现在**至少一个全局同等最优解释**中。候选
+  合法、局部最近、或出现在某个最大（但非偏差最优）配对里，都不足以证明受支持。
+* `can_be_unmatched` 为真当且仅当至少一个最优解释中该对象未配对。没有任何合法
+  三元组的对象（含零候选 gap 记录、无实例可配的记录或实例）在每个解释中都未
+  配对，因此也为真。
+* 一个对象 `supports` 为空表示它在任何最优解释中都未配对；恰有一个支持且
+  `can_be_unmatched=false` 才是确定归属；多支持或存在未配对可能性都保留歧义。
+* 候选 UTC 是配对标签：同一对象对若两个候选都达到同样的最优目标，必须分别返回
+  两个支持，不能先合并候选时刻。
+* 报告两侧（observations 与 occurrences）从同一个受支持三元组集合渲染，必须呈现
+  完全相同的一组事实。
+
+### 结果外壳与排序
+
+沿用 `schema_version=1`、`source_sha256`（原始输入字节的 SHA-256）和 `result`
+外壳。`result` 恰含 `matched_count`、`total_deviation_minutes`、`observations`、
+`occurrences`。没有任何配对时前两者均为 0；规则无实例、记录为空或两侧皆空都是
+合法成功。
+
+* 所有 UTC 时间统一为 `YYYY-MM-DDTHH:MM:00Z`。
+* `observations` 按 `observation_id` 的 Unicode 码点排序；每项恰含
+  `observation_id`、`candidates_utc`、`supports`、`can_be_unmatched`。
+  `candidates_utc` 按 UTC 升序且无重复；`supports` 每项恰含 `schedule`、
+  `start_utc`、`observed_utc`、`delta_minutes`，按
+  `(schedule, start_utc, observed_utc)` 排序。
+* `occurrences` 按 `(schedule, start_utc)` 排序；每项恰含 `schedule`、
+  `start_utc`、`supports`、`can_be_unmatched`；其 `supports` 每项恰含
+  `observation_id`、`observed_utc`、`delta_minutes`，按
+  `(observation_id, observed_utc)` 排序。各支持列表无重复。
+
+### 纽约联动样例（手算可核）
+
+两条只发生一次的 `2024-11-03T01:30` 纽约计划规则，`fold_policy` 分别为
+`earlier`（实例 `05:30Z`）与 `later`（实例 `06:30Z`）。第一条记录
+`timezone=America/New_York, local_start=2024-11-03T01:30` 有两个候选
+`05:30Z`、`06:30Z`；第二条记录 `timezone=UTC, local_start=2024-11-03T05:30`
+只有候选 `05:30Z`；两条记录的 `eligible_schedules` 都含两条规则，容差 0。
+
+* **两条记录同时核销**：最大配对数为 2，第二条记录只能配 `s-early@05:30Z`，
+  于是第一条记录在所有最优解释中必须使用 `06:30Z` 配 `s-later`。四条对象的
+  `can_be_unmatched` 全为 false；第一条记录的 `supports` 只有
+  `(s-later, 06:30Z, 06:30Z, 0)`，`05:30Z` 候选虽合法但不出现在任何最优解释中。
+* **移除第二条记录后**：最大配对数为 1。第一条记录的两个候选都受支持
+  （`s-early@05:30Z` 与 `s-later@06:30Z`，delta 均为 0），记录本身
+  `can_be_unmatched=false`；两个计划实例各有一个支持且
+  `can_be_unmatched=true`（任一最优解释中必有一个实例空闲）。
+
+### 算法：最小费用最大流 + 零残差 SCC
+
+合法三元组构成观测与计划实例之间的二分图，同一对节点之间的并行弧携带不同候选
+UTC 标签（费用可能不同）。网络为 `源 -> 观测 -> 实例 -> 汇`，容量均为 1，弧
+费用为 `abs(delta_minutes)`。用带 Johnson 势的连续最短路增广求整数最小费用
+最大流：增广保证先达到最大流，单位费用保证再达到最小总偏差，两级目标由此精确
+保持。
+
+一次最优流之后，不枚举任何解释即可刻画全部同等最优支持。最优时每条残差弧的
+reduced cost 非负；取 reduced cost 恰为 0 的残差弧构成 G0。沿零 reduced cost
+环推一单位流同时保持流量与费用，因此：
+
+* 当前带流的弧属于当前最优解释，必然受支持；
+* 不带流的弧受支持，当且仅当它本身是零 reduced cost 残差弧且两端在 G0 的同一
+  强连通分量内（零环重路由即给出包含它的同优解释）；
+* 观测能在某同优解释中未配对，当且仅当它在 G0 中从源可达；
+* 实例能未配对，当且仅当它在 G0 中可到达汇；
+* 无合法边的孤立对象按前述规则强制 `can_be_unmatched=true`。
+
+最大流前提使环刻画完备：任何保持流量的重路由都闭合成残差环，包括经过源、汇
+反向弧的重路由。fold 候选作为独立并行弧保留，因此同一对象对的两个候选会被独立
+判定并分别输出。32×32 完全二分图（同刻 32 记录对 32 实例）返回 1024 个受支持
+对象对，全程不枚举 32! 个解释，也不在同优解过多时截断支持。
+
+**另一可行设计的取舍。** 也可以对每条候选弧施加"必须选中"约束后重新精确求解
+最小费用流，逐弧询问是否仍存在同优解释，并对未配对状态再各跑一次重优化。该
+设计单弧证明更直白，但要把整套最短路计算重复至多 E 次、再加上 O(V) 次未配对
+重跑。本实现只付一次流求解加一次线性 Tarjan SCC 与两次 BFS；其正确性义务集中在
+四点：(1) 势不变量持续保证所有残差 reduced cost 非负；(2) 环分析前确已流到真正
+的最大流；(3) fold 候选保持为独立并行弧而非合并标签；(4) 报告两侧由同一个受
+支持三元组集合渲染。测试中的独立穷举 oracle（回溯枚举所有匹配、直接按契约推导
+最优值与完整支持集）在大量随机小文档（含 fold 双候选）上与该残差/SCC 刻画逐一
+对照。
+
+### 边界与操作
+
+* 至多 32 条规则、32 条记录、归一前后各至多 32 个计划实例；8 MB 输入上限；
+  重复 JSON 键、非有限数值、未定义字段均拒绝。
+* 成功时报告原子写入 `--output` 并向 stdout 输出相同 JSON；输入/计算/文件错误
+  退出 2 且不覆盖已有报告。输入与输出路径必须不同，输出符号链接拒绝。
+* 重跑幂等；仅用 Python 标准库，IANA 时区数据取自操作系统。
+
+```sh
+.venv/bin/calendar-reconcile --source fixtures/reconcile.json --output run/reconcile.json
+```

@@ -1,0 +1,43 @@
+{
+  "rules": [
+    {
+      "schedule": "s-early",
+      "timezone": "America/New_York",
+      "local_start": "2024-11-03T01:30",
+      "interval_weeks": 1,
+      "weekdays": [7],
+      "until": "2024-11-03",
+      "duration_minutes": 60,
+      "exceptions": [],
+      "gap_policy": "skip",
+      "fold_policy": "earlier"
+    },
+    {
+      "schedule": "s-later",
+      "timezone": "America/New_York",
+      "local_start": "2024-11-03T01:30",
+      "interval_weeks": 1,
+      "weekdays": [7],
+      "until": "2024-11-03",
+      "duration_minutes": 60,
+      "exceptions": [],
+      "gap_policy": "skip",
+      "fold_policy": "later"
+    }
+  ],
+  "observations": [
+    {
+      "observation_id": "obs-ny",
+      "timezone": "America/New_York",
+      "local_start": "2024-11-03T01:30",
+      "eligible_schedules": ["s-early", "s-later"]
+    },
+    {
+      "observation_id": "obs-utc",
+      "timezone": "UTC",
+      "local_start": "2024-11-03T05:30",
+      "eligible_schedules": ["s-early", "s-later"]
+    }
+  ],
+  "tolerance_minutes": 0
+}
