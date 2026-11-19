@@ -2,11 +2,12 @@
 
 Bounded recurring local schedules across daylight-saving transitions，以及在共享资源容量下按整条重复日历做精确准入、把计划实例与实际执行记录做同等最优核销。业务输入、计算和当前边界详见 [数据契约](docs/contract.md)。
 
-本仓有三个成功时都发布报告的命令：
+本仓有四个成功时输出结果的命令；前三个发布单次报告，第四个维护持久化工作队列：
 
 - `calendar-expand --source INPUT --output REPORT`：把单条重复日历展开成 UTC 实例（原有行为，报告结构不变）。
 - `calendar-admit --source INPUT --output REPORT`：把一组重复日历申请整组接受或拒绝，在容量可行前提下选出总优先级精确最大的方案。
 - `calendar-reconcile --source INPUT --output REPORT`：核销计划日历实例与实际执行记录，报告所有同等最优解释下仍可成立的三元组归属、缺失与未配对可能性，而不挑一个任意配对当作确定事实。
+- `calendar-reminders --db DB --source INPUT`：在持久 SQLite 文件中维护本地日历提醒工作队列，由 `sync`/`claim`/`ack`/`inspect` 四个动作驱动同一条提醒的领取与完成生命周期；只向 stdout 输出，没有 `--output`，不接邮件、不联网、无守护进程、不读系统时钟。
 
 ## 安装与演示
 
@@ -20,8 +21,11 @@ uv pip check --python .venv/bin/python
 .venv/bin/calendar-expand --source fixtures/input.json --output run/report.json
 .venv/bin/calendar-admit --source fixtures/admission.json --output run/admission.json
 .venv/bin/calendar-reconcile --source fixtures/reconcile.json --output run/reconcile.json
+python3 -I examples/demo_reminders.py
 .venv/bin/python -m unittest discover -s tests -v
 ```
+
+不构建安装时，可用 `PYTHONPATH=src python3 -m calendar_expand.reminders_cli --db run/reminders.db --source fixtures/reminders/01_sync.json` 直接运行新入口。
 
 修改源码后重新安装。展开样例连续周次，并报告 `2024-03-10` 的本地时间缺口被跳过；秋季重复时间的 earlier/later 策略由测试覆盖。准入样例的 `triage + scopy` 为最优集，`swallow` 与 `motility` 被拒并各带一个容量冲突见证。核销样例用纽约 2024-11-03 回拨记录演示：第二条 UTC 记录参与竞争时，回拨记录被最大配对固定到 later 实例；移除该记录后两个 fold 候选都保留为支持。本仓不共享其他仓环境，不依赖Docker、外部账号或持续服务。
 
@@ -47,11 +51,22 @@ uv pip check --python .venv/bin/python
 
 实现把问题建成 `源→观测→实例→汇` 的单位容量最小费用最大流，弧费用为绝对偏差，带 Johnson 势的连续最短路增广精确达成两级目标。一次最优流后取 reduced cost 为零的残差图 G0：带流弧必受支持；不带流弧当且仅当自身是零 reduced cost 残差弧且两端在 G0 同一强连通分量内时受支持；观测从源可达、实例能到汇分别给出两侧的未配对可能性。最大流前提保证任何同优重路由都闭合成零残差环，因此无需枚举解释、也不会在同优解过多时截断支持（32×32 完全二分图返回完整 1024 个支持）。另一种“逐弧强制选中后重解最小费用流”的设计证明更直白但要重复 E 次最短路，取舍与正确性义务详见数据契约；测试内另有独立回溯穷举 oracle 在随机文档上交叉验证。
 
+## 持久化提醒队列语义
+
+提醒身份永久固定为 `(schedule, nominal_date)`：名义日期是按星期一锚点、周间隔、星期与起止日期产生、且未被 `exceptions` 排除的原始本地日期，**先保存该日期再做 gap/fold 解析**。`skip` 不生成提醒；`shift_forward` 即使跨日也不改身份；fold 改期也不改身份；不能从解析后的本地时间或 UTC 反推名义日期，也不复用 reconcile 的 `(schedule, start_utc)`。payload 恰为 `schedule`、`nominal_date`、`timezone`、`local_start`、`start_utc`、`end_utc`、`due_utc` 七字段，按全部字段相等比较；`due_utc = start_utc - lead_minutes` 个 elapsed UTC 分钟，历史秒级偏移（如巴黎 1900 年的 `08:50:39Z`）原样保留。
+
+`sync` 完整替换规则快照（至多 32 条规则、实际生成至多 8192 条提醒，全部规则先验证）；`claim` 按 `(due_utc, schedule, nominal_date)` 领取 `due_utc <= now`、无墓碑且无有效领取的提醒，每次分配全库生命周期内不复用的新 token，租约等号即失效；`ack` 仅接受当前仍有效领取的 token，成功后写独立于快照的完成墓碑并释放领取，同 token 重试为 `duplicate=true` 且不改原 `completed_at`，其他 token 一律报错。移除后重加、改时区或改 fold 都不能复活已完成身份；无墓碑的同一身份重加可再领取但换发新 token。若新快照使任一仍有效领取的七字段 payload 消失或变化，整个 `sync` 在任何写入前被拒绝，规则、领取、墓碑与时钟保持原状。
+
+每次成功的 `sync`/`claim`/`ack` 是同一个 `BEGIN IMMEDIATE` 事务，跨进程并发由 SQLite 写锁串行，`inspect` 只读不写且不会读到半成品；失败退出 2、不留部分业务变更，被拒绝的首次 `sync` 不留下数据库文件。完整字段契约、事务边界与持久投影的正确性义务见 [docs/contract_reminders.md](docs/contract_reminders.md)。`examples/demo_reminders.py` 用临时库演示两条联动分支，所有 `now` 显式输入、不等待租约。
+
 ## 源代码布局
 
-src/calendar_expand/model.py 为展开业务模型，admit.py 为准入校验、精确求解与见证，
+src/calendar_expand/model.py 为展开业务模型（`plan` 提供名义日期与解析结果分离的共享展开能力，`analyze` 在其上渲染原报告），
+admit.py 为准入校验、精确求解与见证，
 reconcile.py 为核销校验、最小费用流与零残差 SCC 支持判定，
-common.py 提供受限JSON及报告发布，cli.py、admit_cli.py 与 reconcile_cli.py 分别衔接三个命令。
+reminders.py 为提醒队列的严格校验、SQLite 事务与生命周期状态机，
+common.py 提供受限JSON及报告发布，
+cli.py、admit_cli.py、reconcile_cli.py 与 reminders_cli.py 分别衔接四个命令。
 fixtures 为明确自制样例，代码与样例采用MIT许可。
 
 时区通过标准库 zoneinfo 读取运行系统的 IANA 时区数据库；系统必须提供目标时区（演示使用 America/New_York）。无数据库的系统需先准备 tzdata，本仓未内置该数据库。

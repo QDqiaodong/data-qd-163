@@ -350,3 +350,10 @@ reduced cost 非负；取 reduced cost 恰为 0 的残差弧构成 G0。沿零 r
 ```sh
 .venv/bin/calendar-reconcile --source fixtures/reconcile.json --output run/reconcile.json
 ```
+
+## 持久化日历提醒队列 v1（`calendar-reminders`）
+
+第四个、增量式入口的完整数据契约（名义日期与实际开始时间、payload 相等性、
+严格 JSON、单调时钟、快照替换与活跃领取保护、claim/ack 重试与过期语义、
+SQLite 事务边界与所选持久投影的正确性义务、联动手算样例）见独立文档
+[contract_reminders.md](contract_reminders.md)。前三个入口的接口与报告语义不变。

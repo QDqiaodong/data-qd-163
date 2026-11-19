@@ -1,0 +1,36 @@
+{
+  "action": "sync",
+  "now": "2024-11-04T08:00:00Z",
+  "schedules": [
+    {
+      "rule": {
+        "schedule": "A",
+        "timezone": "UTC",
+        "local_start": "2024-11-04T09:00",
+        "interval_weeks": 1,
+        "weekdays": [1],
+        "until": "2024-11-04",
+        "duration_minutes": 60,
+        "exceptions": [],
+        "gap_policy": "skip",
+        "fold_policy": "earlier"
+      },
+      "lead_minutes": 30
+    },
+    {
+      "rule": {
+        "schedule": "B",
+        "timezone": "UTC",
+        "local_start": "2024-11-04T11:00",
+        "interval_weeks": 1,
+        "weekdays": [1],
+        "until": "2024-11-04",
+        "duration_minutes": 60,
+        "exceptions": [],
+        "gap_policy": "skip",
+        "fold_policy": "earlier"
+      },
+      "lead_minutes": 30
+    }
+  ]
+}

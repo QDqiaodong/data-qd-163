@@ -33,9 +33,18 @@ def resolve(local, zone, gap_policy, fold_policy):
     return selected
 
 
-def analyze(data):
+def plan(data):
+    """Validate one complete calendar rule and split it into raw dates and resolved items.
+
+    The split is the single internal expansion capability shared by the
+    single-shot report and the persistent reminder queue.  Each generated item
+    keeps its *nominal* local date (the raw recurring date before gap/fold
+    resolution) alongside the actually resolved wall time and UTC instants.
+    ``skipped`` holds gap-skip entries keyed by nominal date.  All validation
+    rules are exactly those of ``analyze``.
+    """
     require(data, 'schedule timezone local_start interval_weeks weekdays until duration_minutes exceptions gap_policy fold_policy')
-    ident(data['schedule'])
+    name = ident(data['schedule'])
     try:
         zone = ZoneInfo(ident(data['timezone']))
     except (ZoneInfoNotFoundError, ValueError) as error:
@@ -55,7 +64,7 @@ def analyze(data):
     if data['gap_policy'] not in ('skip', 'shift_forward') or data['fold_policy'] not in ('earlier', 'later'):
         raise ValueError('unsupported DST policy')
     week0 = start.date() - timedelta(days=start.date().weekday())
-    occurrences, skipped = [], []
+    items, skipped = [], []
     cursor = start.date()
     while cursor <= until:
         week = (cursor - week0).days // 7
@@ -63,11 +72,24 @@ def analyze(data):
             local = datetime.combine(cursor, start.time())
             instant, actual = resolve(local, zone, data['gap_policy'], data['fold_policy'])
             if instant is None:
-                skipped.append({'date': cursor.isoformat(), 'reason': 'nonexistent_local_time'})
+                skipped.append({'date': cursor, 'reason': 'nonexistent_local_time'})
             else:
                 end = instant + timedelta(minutes=duration)
-                occurrences.append({'local_start': actual.replace(tzinfo=None).isoformat(timespec='minutes'),
-                                    'start_utc': instant.isoformat().replace('+00:00', 'Z'),
-                                    'end_utc': end.isoformat().replace('+00:00', 'Z')})
+                items.append({'nominal_date': cursor, 'instant': instant,
+                              'actual': actual, 'end': end})
         cursor += timedelta(days=1)
-    return {'schedule': data['schedule'], 'timezone': data['timezone'], 'occurrences': occurrences, 'skipped': skipped}
+    return {'schedule': name, 'timezone': data['timezone'],
+            'items': items, 'skipped': skipped}
+
+
+def analyze(data):
+    planned = plan(data)
+    occurrences = [
+        {'local_start': item['actual'].replace(tzinfo=None).isoformat(timespec='minutes'),
+         'start_utc': item['instant'].isoformat().replace('+00:00', 'Z'),
+         'end_utc': item['end'].isoformat().replace('+00:00', 'Z')}
+        for item in planned['items']]
+    skipped = [{'date': entry['date'].isoformat(), 'reason': entry['reason']}
+               for entry in planned['skipped']]
+    return {'schedule': planned['schedule'], 'timezone': planned['timezone'],
+            'occurrences': occurrences, 'skipped': skipped}

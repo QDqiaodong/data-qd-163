@@ -1,0 +1,6 @@
+{
+  "action": "claim",
+  "now": "2024-11-04T08:30:00Z",
+  "limit": 1,
+  "lease_minutes": 10
+}
