@@ -1,0 +1,12 @@
+{
+  "action": "init",
+  "timezone": "UTC",
+  "first_month": "2025-01",
+  "rooms": [
+    {
+      "room": "R",
+      "free_minutes": 60,
+      "unit_cents": 2
+    }
+  ]
+}

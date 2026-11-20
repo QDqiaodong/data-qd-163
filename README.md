@@ -2,7 +2,7 @@
 
 Bounded recurring local schedules across daylight-saving transitions，以及在共享资源容量下按整条重复日历做精确准入、把计划实例与实际执行记录做同等最优核销。业务输入、计算和当前边界详见 [数据契约](docs/contract.md)。
 
-本仓有六个成功时输出结果的命令；前三个和第五个发布单次报告，第四个维护持久化工作队列，第六个维护收件方保存的视图文件：
+本仓有七个成功时输出结果的命令；前三个和第五个发布单次报告，第四个维护持久化工作队列，第六个维护收件方保存的视图文件，第七个维护按预约结账的共享设施账簿：
 
 - `calendar-expand --source INPUT --output REPORT`：把单条重复日历展开成 UTC 实例（原有行为，报告结构不变）。
 - `calendar-admit --source INPUT --output REPORT`：把一组重复日历申请整组接受或拒绝，在容量可行前提下选出总优先级精确最大的方案。
@@ -10,6 +10,7 @@ Bounded recurring local schedules across daylight-saving transitions，以及在
 - `calendar-reminders --db DB --source INPUT`：在持久 SQLite 文件中维护本地日历提醒工作队列，由 `sync`/`claim`/`ack`/`inspect` 四个动作驱动同一条提醒的领取与完成生命周期；只向 stdout 输出，没有 `--output`，不接邮件、不联网、无守护进程、不读系统时钟。
 - `calendar-workload --source INPUT --output REPORT`：统计每名员工在指定本地日期范围内每天的会议占用秒数与超限标记，同一员工多条日历重叠时按真实 UTC 区间并集计时。
 - `calendar-feed publish --source INPUT --output FILE` 与 `calendar-feed apply --view VIEW --delta PATCH`：为外部合作方发布专属日历视图（全量或差量），接收方在没有内部源的环境下用差量原子更新自己保存的视图。
+- `calendar-billing --db DB --source INPUT`：在持久 SQLite 账簿里按当前预约清单出账，免费额度按真实起点先到先用、超额计费；历史预约的重叠改动以下一张新账单的补差入账，旧账单原样归档供对账；由 `init`/`replace`/`close`/`show` 四个动作驱动，只向 stdout 输出，没有 `--output`，不读系统时钟。
 
 ## 安装与演示
 
@@ -27,12 +28,14 @@ uv pip check --python .venv/bin/python
 .venv/bin/calendar-feed publish --source fixtures/feed/01_publish_full.json --output run/view.json
 .venv/bin/calendar-feed publish --source fixtures/feed/02_publish_delta_busy.json --output run/delta1.json
 .venv/bin/calendar-feed apply --view run/view.json --delta run/delta1.json
+.venv/bin/calendar-billing --db run/ledger.db --source fixtures/billing/01_init.json
 python3 -I examples/demo_reminders.py
 python3 -I examples/demo_feed.py
+python3 -I examples/demo_billing.py
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-不构建安装时，可用 `PYTHONPATH=src python3 -m calendar_expand.reminders_cli --db run/reminders.db --source fixtures/reminders/01_sync.json` 直接运行新入口。
+不构建安装时，可用 `PYTHONPATH=src python3 -m calendar_expand.reminders_cli --db run/reminders.db --source fixtures/reminders/01_sync.json` 直接运行新入口，结账入口对应 `PYTHONPATH=src python3 -m calendar_expand.billing_cli --db run/ledger.db --source fixtures/billing/01_init.json`。
 
 修改源码后重新安装。展开样例连续周次，并报告 `2024-03-10` 的本地时间缺口被跳过；秋季重复时间的 earlier/later 策略由测试覆盖。准入样例的 `triage + scopy` 为最优集，`swallow` 与 `motility` 被拒并各带一个容量冲突见证。核销样例用纽约 2024-11-03 回拨记录演示：第二条 UTC 记录参与竞争时，回拨记录被最大配对固定到 later 实例；移除该记录后两个 fold 候选都保留为支持。负载样例在纽约 2024-03-10 春季跳时日上重叠两条日历（01:30 起 120 分钟与缺口平移后的 03:00 起 60 分钟），并集 7200 秒超过每日 100 分钟上限。本仓不共享其他仓环境，不依赖Docker、外部账号或持续服务。
 
@@ -78,6 +81,14 @@ python3 -I examples/demo_feed.py
 
 `publish` 在 `previous=null` 时输出全量视图（恰含 `schema_version,recipient,rows,view_sha256`），否则输出从 `previous` 到 `current` 的差量（恰含 `schema_version,recipient,base_sha256,target_sha256,upserts,withdrawals`）。内容指纹是把 `{schema_version,recipient,rows}` 按 `json.dumps(sort_keys=True,ensure_ascii=True,separators=(',',':'))` 序列化后对 UTF-8 字节算的 SHA-256。`apply` 先严格校验本地视图与差量形状，只接受收件方与基线指纹都匹配的差量，逐行完整替换后重算指纹，与 `target_sha256` 一致才原子写回 `VIEW`；指纹只约束内容一致性，不认证发送方，也不维护单调序号。每份快照至多 64 组、64 条规则、2048 个展开实例（无授权规则同样完整校验并计入）；视图与差量操作列表各至多 2048 项。完整契约见 [docs/contract_feed.md](docs/contract_feed.md)，可重放样例见 [fixtures/feed](fixtures/feed/README.md) 与 `examples/demo_feed.py`。
 
+## 共享设施按预约结账语义
+
+`calendar-billing` 是第七个、增量式入口；前六个命令的接口与语义不变。它在一本持久 SQLite 账簿中维护共享设施的预约与月度账单：`init` 固定结账时区、最早服务月与每间房的免费额度/单价；`replace` 整体替换运营方当前认可的完整预约清单；`close` 按服务月顺序出账；`show` 只读查询已关账月。成功后只向 stdout 输出该动作的结果对象（无 `schema_version` 外壳）。
+
+每个展开实例只归一个服务月：真实 UTC 起点转换到结账时区后取当地年月，整段 elapsed 分钟都归给起点所在月，跨月也不拆分。每个 `(服务月, 房间)` 内按真实 UTC 起点先到先用免费额度，同刻按 `(schedule, nominal_date)` 码点排序；实例可部分免费，重叠不取并集，历史秒级偏移不截断。首个 `close` 只能关 `first_month`，其后逐月紧邻，跳月失败；重试已关账月原样返回归档账单，不重算补差。
+
+新账单含两类明细：本服务月每个实例的初次计费（含免费实例），以及所有更早服务月按当前清单重算后与该行**累计已入账金额**的差额（正补收、负冲回）。行身份为 `(service_month, room, account, schedule, nominal_date)`；消失的旧行全额冲回，改房间/成本中心/服务月的实例冲旧行、记新行，绝不整笔改挂；同成本中心的正负明细不互相抵消省略。`account_totals` 只列本账单有明细的成本中心、按账号排序、允许零或负。累计入账以持久 `posted` 投影维护，故无论开过多少张补差账单比较基准都等于真实开出合计。`close` 在一个事务中同时产生账单、归档并更新累计，失败整体回滚；`show` 与重复 `close` 始终返回归档明细与汇总。完整契约见 [docs/contract_billing.md](docs/contract_billing.md)，可重放样例见 [fixtures/billing](fixtures/billing/README.md) 与 `examples/demo_billing.py`。
+
 ## 源代码布局
 
 src/calendar_expand/model.py 为展开业务模型（`plan` 提供名义日期与解析结果分离的共享展开能力，`analyze` 在其上渲染原报告），
@@ -86,8 +97,9 @@ reconcile.py 为核销校验、最小费用流与零残差 SCC 支持判定，
 reminders.py 为提醒队列的严格校验、SQLite 事务与生命周期状态机，
 workload.py 为员工负载统计的严格校验、本地日 UTC 原像与区间并集按日归集，
 feed.py 为收件方视图的快照校验、按授权渲染、内容指纹与差量计算/应用，
+billing.py 为共享设施预约结账的服务月归属、免费额度消耗、每月账单与跨月补差，
 common.py 提供受限JSON及报告发布，
-cli.py、admit_cli.py、reconcile_cli.py、reminders_cli.py、workload_cli.py 与 feed_cli.py 分别衔接六个命令。
+cli.py、admit_cli.py、reconcile_cli.py、reminders_cli.py、workload_cli.py、feed_cli.py 与 billing_cli.py 分别衔接七个命令。
 fixtures 为明确自制样例，代码与样例采用MIT许可。
 
 时区通过标准库 zoneinfo 读取运行系统的 IANA 时区数据库；系统必须提供目标时区（演示使用 America/New_York）。无数据库的系统需先准备 tzdata，本仓未内置该数据库。
