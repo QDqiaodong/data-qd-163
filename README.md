@@ -2,12 +2,13 @@
 
 Bounded recurring local schedules across daylight-saving transitions，以及在共享资源容量下按整条重复日历做精确准入、把计划实例与实际执行记录做同等最优核销。业务输入、计算和当前边界详见 [数据契约](docs/contract.md)。
 
-本仓有四个成功时输出结果的命令；前三个发布单次报告，第四个维护持久化工作队列：
+本仓有五个成功时输出结果的命令；前三个和第五个发布单次报告，第四个维护持久化工作队列：
 
 - `calendar-expand --source INPUT --output REPORT`：把单条重复日历展开成 UTC 实例（原有行为，报告结构不变）。
 - `calendar-admit --source INPUT --output REPORT`：把一组重复日历申请整组接受或拒绝，在容量可行前提下选出总优先级精确最大的方案。
 - `calendar-reconcile --source INPUT --output REPORT`：核销计划日历实例与实际执行记录，报告所有同等最优解释下仍可成立的三元组归属、缺失与未配对可能性，而不挑一个任意配对当作确定事实。
 - `calendar-reminders --db DB --source INPUT`：在持久 SQLite 文件中维护本地日历提醒工作队列，由 `sync`/`claim`/`ack`/`inspect` 四个动作驱动同一条提醒的领取与完成生命周期；只向 stdout 输出，没有 `--output`，不接邮件、不联网、无守护进程、不读系统时钟。
+- `calendar-workload --source INPUT --output REPORT`：统计每名员工在指定本地日期范围内每天的会议占用秒数与超限标记，同一员工多条日历重叠时按真实 UTC 区间并集计时。
 
 ## 安装与演示
 
@@ -21,13 +22,14 @@ uv pip check --python .venv/bin/python
 .venv/bin/calendar-expand --source fixtures/input.json --output run/report.json
 .venv/bin/calendar-admit --source fixtures/admission.json --output run/admission.json
 .venv/bin/calendar-reconcile --source fixtures/reconcile.json --output run/reconcile.json
+.venv/bin/calendar-workload --source fixtures/workload.json --output run/workload.json
 python3 -I examples/demo_reminders.py
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
 不构建安装时，可用 `PYTHONPATH=src python3 -m calendar_expand.reminders_cli --db run/reminders.db --source fixtures/reminders/01_sync.json` 直接运行新入口。
 
-修改源码后重新安装。展开样例连续周次，并报告 `2024-03-10` 的本地时间缺口被跳过；秋季重复时间的 earlier/later 策略由测试覆盖。准入样例的 `triage + scopy` 为最优集，`swallow` 与 `motility` 被拒并各带一个容量冲突见证。核销样例用纽约 2024-11-03 回拨记录演示：第二条 UTC 记录参与竞争时，回拨记录被最大配对固定到 later 实例；移除该记录后两个 fold 候选都保留为支持。本仓不共享其他仓环境，不依赖Docker、外部账号或持续服务。
+修改源码后重新安装。展开样例连续周次，并报告 `2024-03-10` 的本地时间缺口被跳过；秋季重复时间的 earlier/later 策略由测试覆盖。准入样例的 `triage + scopy` 为最优集，`swallow` 与 `motility` 被拒并各带一个容量冲突见证。核销样例用纽约 2024-11-03 回拨记录演示：第二条 UTC 记录参与竞争时，回拨记录被最大配对固定到 later 实例；移除该记录后两个 fold 候选都保留为支持。负载样例在纽约 2024-03-10 春季跳时日上重叠两条日历（01:30 起 120 分钟与缺口平移后的 03:00 起 60 分钟），并集 7200 秒超过每日 100 分钟上限。本仓不共享其他仓环境，不依赖Docker、外部账号或持续服务。
 
 输入JSON最多8MB，拒绝重复键、非有限数值和未定义字段；源字节SHA256随结果保留。
 输出是可独立读取的JSON；成功后原子替换，输入/计算失败退出2并保留旧报告。
@@ -59,14 +61,21 @@ python3 -I examples/demo_reminders.py
 
 每次成功的 `sync`/`claim`/`ack` 是同一个 `BEGIN IMMEDIATE` 事务，跨进程并发由 SQLite 写锁串行，`inspect` 只读不写且不会读到半成品；失败退出 2、不留部分业务变更，被拒绝的首次 `sync` 不留下数据库文件。完整字段契约、事务边界与持久投影的正确性义务见 [docs/contract_reminders.md](docs/contract_reminders.md)。`examples/demo_reminders.py` 用临时库演示两条联动分支，所有 `now` 显式输入、不等待租约。
 
+## 员工每日会议负载统计语义
+
+`calendar-workload` 是第五个、增量式入口；前四个命令的接口与报告结构不变。输入声明一组员工（各自独立的 IANA 时区与每日上限分钟）和一组完整重复日历规则，输出指定本地日期范围内每名员工每天的 `busy_seconds` 与 `over_limit`。每个展开实例是真实 elapsed 时长的 UTC 半开区间 `[start, end)`，秒精度与历史秒级偏移（如巴黎 1900 年的 `+00:09:21`）原样保留；规则时区决定会议何时发生，员工时区独立决定占用归入哪一个本地日期。
+
+每日占用是该员工全部 UTC 区间裁切到该本地日之后的**并集**：同一员工多条日历或实例重叠不重复计时，端点相接不重叠，不同员工各自独立。本地日的 UTC 边界由时区规则决定——春季跳时日 82800 秒、秋季回拨日 90000 秒、被整条跳过的日期（如 Apia 2011-12-30）为 0 秒，绝不假设每个本地日都是 86400 秒；跨员工本地午夜的区间把午夜前后的真实秒数分别归入相邻日期。`busy_seconds` 严格大于 `daily_limit_minutes × 60` 才标记 `over_limit=true`，等于上限不超限；无占用日期仍输出 `busy_seconds=0`。实现先按员工把 UTC 区间合并成不相交并集，再与每个本地日期的 UTC 原像求交；完整输入（含全部规则）先验证，空展开或超限日不会遮住末尾的非法项。
+
 ## 源代码布局
 
 src/calendar_expand/model.py 为展开业务模型（`plan` 提供名义日期与解析结果分离的共享展开能力，`analyze` 在其上渲染原报告），
 admit.py 为准入校验、精确求解与见证，
 reconcile.py 为核销校验、最小费用流与零残差 SCC 支持判定，
 reminders.py 为提醒队列的严格校验、SQLite 事务与生命周期状态机，
+workload.py 为员工负载统计的严格校验、本地日 UTC 原像与区间并集按日归集，
 common.py 提供受限JSON及报告发布，
-cli.py、admit_cli.py、reconcile_cli.py 与 reminders_cli.py 分别衔接四个命令。
+cli.py、admit_cli.py、reconcile_cli.py、reminders_cli.py 与 workload_cli.py 分别衔接五个命令。
 fixtures 为明确自制样例，代码与样例采用MIT许可。
 
 时区通过标准库 zoneinfo 读取运行系统的 IANA 时区数据库；系统必须提供目标时区（演示使用 America/New_York）。无数据库的系统需先准备 tzdata，本仓未内置该数据库。

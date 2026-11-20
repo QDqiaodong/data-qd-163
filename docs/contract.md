@@ -357,3 +357,96 @@ reduced cost 非负；取 reduced cost 恰为 0 的残差弧构成 G0。沿零 r
 严格 JSON、单调时钟、快照替换与活跃领取保护、claim/ack 重试与过期语义、
 SQLite 事务边界与所选持久投影的正确性义务、联动手算样例）见独立文档
 [contract_reminders.md](contract_reminders.md)。前三个入口的接口与报告语义不变。
+
+## 员工每日会议负载统计 v1（`calendar-workload`）
+
+`calendar-workload` 是第五个、增量式入口。前四个入口的接口与报告结构保持不变。
+它统计每名员工在指定本地日期范围内每一天被会议占用的时间，按真实 UTC
+秒数计量，并对超过每日上限的日期打标。
+
+### 输入
+
+JSON 根恰含 `from_date`、`through_date`、`employees`、`schedules`。
+
+* `from_date`、`through_date` 是严格的 `YYYY-MM-DD` 有效日历日期，范围含首尾
+  两天，且含首尾最多 3660 天（即 `through_date - from_date <= 3659` 天）。
+* `employees` 是数组，至多 32 项；每项恰含 `employee`、`timezone`、
+  `daily_limit_minutes`。`employee` 遵循 `common.ident` 且全局唯一；
+  `timezone` 必须是系统可用的 IANA 时区名；`daily_limit_minutes` 是
+  0..1440 的整数（布尔值不是整数）。
+* `schedules` 是数组，至多 32 项；每项恰含 `employee`、`rule`。`employee`
+  必须引用已声明的员工；`rule` 是 `model.plan` 使用的完整日历规则对象
+  （字段与全部边界沿用展开模型），其 `schedule` 在全部规则间全局唯一。
+* 全部规则展开后的实例总数至多 8192；展开为空的规则合法。`employees` 与
+  `schedules` 都允许为空数组。
+* 所有输入先完整验证：任何空展开、超限日或其他早期业务结论都不会跳过对
+  末尾非法员工、非法引用或非法规则的拒绝。
+
+### 统计语义
+
+每个展开实例是 UTC 半开区间 `[start, end)`，`end` 按真实 elapsed 时长计算，
+秒精度与历史秒级 UTC 偏移（如巴黎 1900 年的 `+00:09:21`）原样保留。规则
+时区决定重复日历在何时发生；员工时区独立决定占用归入哪一个本地日期。
+
+员工某本地日的 UTC 原像是 `[day_start(d), day_start(d+1))`，其中
+`day_start` 是当地午夜对应的真实 UTC 时刻：
+
+* 正常午夜唯一对应一个 UTC 时刻；
+* 午夜落在回拨（fold）区间时取最早的有效时刻（例如智利秋季 24:00 回拨日
+  的 25 小时长度由此保留）；
+* 午夜被跳过时（智利春季 24:00 跳时、Apia 2011-12-30 整日跳过），解析为
+  缺口之后第一个有效墙上时刻，即缺口结束瞬间；被整日跳过的日期原像为空，
+  占用为 0 秒。
+
+因此每个本地日的长度由时区规则决定（纽约跳时日 82800 秒、回拨日 90000 秒、
+巴黎 1911-03-10 为 86961 秒），绝不假设固定的 86400 秒。
+
+`busy_seconds` 是该员工全部实例区间裁切到该本地日原像后的**并集**长度：
+同一员工的多条日历或实例在 UTC 上重叠时不重复计时，端点相接
+（`a.end == b.start`）不重叠；不同员工各自独立统计。跨员工本地午夜的区间
+把午夜前后的真实秒数分别归入相邻日期，一个实例不会因此复制成两个日历实例。
+`busy_seconds` 严格大于 `daily_limit_minutes × 60` 时 `over_limit=true`，
+等于上限不超限；无占用日期仍输出 `busy_seconds=0`、`over_limit=false`。
+范围外日期上的占用不计入范围内日期（跨范围边界的区间只计入落在范围内
+日期上的部分）。
+
+### 结果外壳与排序
+
+沿用 `schema_version=1`、`source_sha256`（原始输入字节的 SHA-256）与
+`result` 外壳。`result` 恰含 `from_date`、`through_date`、`employees`。
+`employees` 按员工标识的 Unicode 码点升序；每项恰含 `employee`、
+`timezone`、`daily_limit_minutes`、`days`。`days` 对范围内每个本地日期
+恰有一项、按日期升序，每项恰含 `date`、`busy_seconds`、`over_limit`。
+空员工列表产生空 `employees`；有员工但无日历时所有范围日期
+`busy_seconds=0`。
+
+### 算法
+
+按员工把全部实例区间合并成排序的不相交并集（保留半开端点与秒精度），
+再把该并集与按升序排列的每个本地日 UTC 原像做一次前向扫描求交。每个被
+覆盖的秒恰好归入一个本地日期；合并与扫描都不依赖"每日 86400 秒"的假设。
+另一种"先按本地日切分各区间、再在员工与日期内合并"的设计同样正确，本
+实现选择先合并后按日求交，其正确性义务集中在并集合并的半开语义、日界
+原像的时区规则来源与扫描的完整分区。
+
+### 手算样例（`fixtures/workload.json`）
+
+纽约员工 alice（每日上限 100 分钟）在 2024-03-10 春季跳时日有两条日历：
+01:30 开始的 120 分钟（01:30 EST = 06:30 UTC，区间 `[06:30, 08:30)`）与
+02:30 开始的 60 分钟（02:30 不存在，`shift_forward` 平移到 03:00 EDT =
+07:00 UTC，区间 `[07:00, 08:00)`）。两条 UTC 区间重叠，并集为
+`[06:30, 08:30)` = 7200 秒，而非逐条求和的 10800 秒。7200 > 100×60，
+该日 `over_limit=true`。
+
+### 边界与操作
+
+* 至多 32 名员工、32 条规则、8192 个展开实例；日期范围含首尾至多 3660
+  天；8 MB 输入上限；重复 JSON 键、非有限数值、未定义字段均拒绝。
+* 成功时报告原子写入 `--output` 并向 stdout 输出相同 JSON；输入/计算/
+  文件错误退出 2 且不替换已有报告。输入与输出路径必须不同，输出符号链接
+  拒绝。
+* 重跑幂等；仅用 Python 标准库，IANA 时区数据取自操作系统。
+
+```sh
+.venv/bin/calendar-workload --source fixtures/workload.json --output run/workload.json
+```

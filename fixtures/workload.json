@@ -1,0 +1,11 @@
+{
+  "from_date": "2024-03-10",
+  "through_date": "2024-03-10",
+  "employees": [
+    {"employee": "alice", "timezone": "America/New_York", "daily_limit_minutes": 100}
+  ],
+  "schedules": [
+    {"employee": "alice", "rule": {"schedule": "a", "timezone": "America/New_York", "local_start": "2024-03-10T01:30", "interval_weeks": 1, "weekdays": [7], "until": "2024-03-10", "duration_minutes": 120, "exceptions": [], "gap_policy": "skip", "fold_policy": "earlier"}},
+    {"employee": "alice", "rule": {"schedule": "b", "timezone": "America/New_York", "local_start": "2024-03-10T02:30", "interval_weeks": 1, "weekdays": [7], "until": "2024-03-10", "duration_minutes": 60, "exceptions": [], "gap_policy": "shift_forward", "fold_policy": "earlier"}}
+  ]
+}
