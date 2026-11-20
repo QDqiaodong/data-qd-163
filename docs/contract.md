@@ -450,3 +450,9 @@ JSON 根恰含 `from_date`、`through_date`、`employees`、`schedules`。
 ```sh
 .venv/bin/calendar-workload --source fixtures/workload.json --output run/workload.json
 ```
+
+## 收件方专属日历视图与差量更新 v1（`calendar-feed`）
+
+第六个、增量式入口的完整数据契约（发布源与快照校验、按最高授权的可见性、
+公开键与内容指纹、差量形状与接收端应用顺序、验收样例）见独立文档
+[contract_feed.md](contract_feed.md)。前五个入口的接口与报告语义不变。

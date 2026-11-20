@@ -1,0 +1,29 @@
+{
+  "recipient": "partner",
+  "current": {
+    "groups": [
+      {"group": "alpha", "access": "detail"},
+      {"group": "beta", "access": "busy"}
+    ],
+    "activities": [
+      {
+        "rule": {
+          "schedule": "ops-weekly-417",
+          "timezone": "UTC",
+          "local_start": "2025-01-15T09:00",
+          "interval_weeks": 1,
+          "weekdays": [3],
+          "until": "2025-01-15",
+          "duration_minutes": 60,
+          "exceptions": [],
+          "gap_policy": "skip",
+          "fold_policy": "earlier"
+        },
+        "alias": "meeting",
+        "title": "内部主题",
+        "groups": ["alpha", "beta"]
+      }
+    ]
+  },
+  "previous": null
+}

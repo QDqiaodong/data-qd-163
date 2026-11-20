@@ -2,13 +2,14 @@
 
 Bounded recurring local schedules across daylight-saving transitions，以及在共享资源容量下按整条重复日历做精确准入、把计划实例与实际执行记录做同等最优核销。业务输入、计算和当前边界详见 [数据契约](docs/contract.md)。
 
-本仓有五个成功时输出结果的命令；前三个和第五个发布单次报告，第四个维护持久化工作队列：
+本仓有六个成功时输出结果的命令；前三个和第五个发布单次报告，第四个维护持久化工作队列，第六个维护收件方保存的视图文件：
 
 - `calendar-expand --source INPUT --output REPORT`：把单条重复日历展开成 UTC 实例（原有行为，报告结构不变）。
 - `calendar-admit --source INPUT --output REPORT`：把一组重复日历申请整组接受或拒绝，在容量可行前提下选出总优先级精确最大的方案。
 - `calendar-reconcile --source INPUT --output REPORT`：核销计划日历实例与实际执行记录，报告所有同等最优解释下仍可成立的三元组归属、缺失与未配对可能性，而不挑一个任意配对当作确定事实。
 - `calendar-reminders --db DB --source INPUT`：在持久 SQLite 文件中维护本地日历提醒工作队列，由 `sync`/`claim`/`ack`/`inspect` 四个动作驱动同一条提醒的领取与完成生命周期；只向 stdout 输出，没有 `--output`，不接邮件、不联网、无守护进程、不读系统时钟。
 - `calendar-workload --source INPUT --output REPORT`：统计每名员工在指定本地日期范围内每天的会议占用秒数与超限标记，同一员工多条日历重叠时按真实 UTC 区间并集计时。
+- `calendar-feed publish --source INPUT --output FILE` 与 `calendar-feed apply --view VIEW --delta PATCH`：为外部合作方发布专属日历视图（全量或差量），接收方在没有内部源的环境下用差量原子更新自己保存的视图。
 
 ## 安装与演示
 
@@ -23,7 +24,11 @@ uv pip check --python .venv/bin/python
 .venv/bin/calendar-admit --source fixtures/admission.json --output run/admission.json
 .venv/bin/calendar-reconcile --source fixtures/reconcile.json --output run/reconcile.json
 .venv/bin/calendar-workload --source fixtures/workload.json --output run/workload.json
+.venv/bin/calendar-feed publish --source fixtures/feed/01_publish_full.json --output run/view.json
+.venv/bin/calendar-feed publish --source fixtures/feed/02_publish_delta_busy.json --output run/delta1.json
+.venv/bin/calendar-feed apply --view run/view.json --delta run/delta1.json
 python3 -I examples/demo_reminders.py
+python3 -I examples/demo_feed.py
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
@@ -67,6 +72,12 @@ python3 -I examples/demo_reminders.py
 
 每日占用是该员工全部 UTC 区间裁切到该本地日之后的**并集**：同一员工多条日历或实例重叠不重复计时，端点相接不重叠，不同员工各自独立。本地日的 UTC 边界由时区规则决定——春季跳时日 82800 秒、秋季回拨日 90000 秒、被整条跳过的日期（如 Apia 2011-12-30）为 0 秒，绝不假设每个本地日都是 86400 秒；跨员工本地午夜的区间把午夜前后的真实秒数分别归入相邻日期。`busy_seconds` 严格大于 `daily_limit_minutes × 60` 才标记 `over_limit=true`，等于上限不超限；无占用日期仍输出 `busy_seconds=0`。实现先按员工把 UTC 区间合并成不相交并集，再与每个本地日期的 UTC 原像求交；完整输入（含全部规则）先验证，空展开或超限日不会遮住末尾的非法项。
 
+## 收件方专属视图与差量更新语义
+
+`calendar-feed` 是第六个、增量式入口；前五个命令的接口与报告结构不变。运营方为每个外部合作方维护一份授权快照 `{groups, activities}`：`groups` 给出该收件方在每个发布组的授权（`none`/`busy`/`detail`，等级递增），`activities` 携带完整日历规则、对外别名、标题与所属发布组。每个展开实例按活动全部所属组的最高授权决定隐藏、只显示占用时间还是同时显示标题；公开键为 `(alias, start_utc)`，时间统一 `YYYY-MM-DDTHH:MM:SSZ` 并保留历史秒偏移。内部规则 ID、组名、权限配置、隐藏活动与输入摘要都不进入对外结果，因此改动隐藏活动或占用视图看不到的标题不会改变该视图的任何字节、指纹或差量操作。
+
+`publish` 在 `previous=null` 时输出全量视图（恰含 `schema_version,recipient,rows,view_sha256`），否则输出从 `previous` 到 `current` 的差量（恰含 `schema_version,recipient,base_sha256,target_sha256,upserts,withdrawals`）。内容指纹是把 `{schema_version,recipient,rows}` 按 `json.dumps(sort_keys=True,ensure_ascii=True,separators=(',',':'))` 序列化后对 UTF-8 字节算的 SHA-256。`apply` 先严格校验本地视图与差量形状，只接受收件方与基线指纹都匹配的差量，逐行完整替换后重算指纹，与 `target_sha256` 一致才原子写回 `VIEW`；指纹只约束内容一致性，不认证发送方，也不维护单调序号。每份快照至多 64 组、64 条规则、2048 个展开实例（无授权规则同样完整校验并计入）；视图与差量操作列表各至多 2048 项。完整契约见 [docs/contract_feed.md](docs/contract_feed.md)，可重放样例见 [fixtures/feed](fixtures/feed/README.md) 与 `examples/demo_feed.py`。
+
 ## 源代码布局
 
 src/calendar_expand/model.py 为展开业务模型（`plan` 提供名义日期与解析结果分离的共享展开能力，`analyze` 在其上渲染原报告），
@@ -74,8 +85,9 @@ admit.py 为准入校验、精确求解与见证，
 reconcile.py 为核销校验、最小费用流与零残差 SCC 支持判定，
 reminders.py 为提醒队列的严格校验、SQLite 事务与生命周期状态机，
 workload.py 为员工负载统计的严格校验、本地日 UTC 原像与区间并集按日归集，
+feed.py 为收件方视图的快照校验、按授权渲染、内容指纹与差量计算/应用，
 common.py 提供受限JSON及报告发布，
-cli.py、admit_cli.py、reconcile_cli.py、reminders_cli.py 与 workload_cli.py 分别衔接五个命令。
+cli.py、admit_cli.py、reconcile_cli.py、reminders_cli.py、workload_cli.py 与 feed_cli.py 分别衔接六个命令。
 fixtures 为明确自制样例，代码与样例采用MIT许可。
 
 时区通过标准库 zoneinfo 读取运行系统的 IANA 时区数据库；系统必须提供目标时区（演示使用 America/New_York）。无数据库的系统需先准备 tzdata，本仓未内置该数据库。

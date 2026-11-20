@@ -13,5 +13,6 @@ calendar-admit = "calendar_expand.admit_cli:main"
 calendar-reconcile = "calendar_expand.reconcile_cli:main"
 calendar-reminders = "calendar_expand.reminders_cli:main"
 calendar-workload = "calendar_expand.workload_cli:main"
+calendar-feed = "calendar_expand.feed_cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
